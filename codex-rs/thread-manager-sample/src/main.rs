@@ -322,6 +322,7 @@ async fn new_config(
         project_doc_max_bytes: 32 * 1024,
         project_doc_fallback_filenames: Vec::new(),
         tool_output_token_limit: None,
+        recoverable_exec_output: Default::default(),
         agents_enabled: true,
         agent_max_threads: Some(6),
         agent_default_subagent_model: None,
