@@ -378,6 +378,7 @@ impl ToolOutput for AbortedToolOutput {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecCommandToolOutput {
+    pub(crate) recoverable_output: Option<crate::unified_exec::output_artifact::ArtifactReceipt>,
     pub event_call_id: String,
     pub chunk_id: String,
     pub wall_time: Duration,
@@ -394,7 +395,20 @@ pub struct ExecCommandToolOutput {
 }
 
 impl ToolOutput for ExecCommandToolOutput {
+    fn fallback_token_limit_override(&self) -> Option<usize> {
+        self.recoverable_output
+            .as_ref()
+            .map(|_| self.response_text().len().div_ceil(4))
+    }
+
     fn log_output(&self) -> String {
+        if let Some(receipt) = &self.recoverable_output {
+            return format!(
+                "{}\nRecovery: {}",
+                self.response_header(),
+                receipt.artifact_status
+            );
+        }
         // The telemetry budget must not inherit the model's output-token limit.
         let mut output = String::from_utf8_lossy(&self.raw_output).into_owned();
         if let Some(omitted_bytes) = self.output_omitted_bytes {
@@ -446,6 +460,9 @@ impl ToolOutput for ExecCommandToolOutput {
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+        if self.recoverable_output.is_some() {
+            return self.recovery_result();
+        }
         #[derive(Serialize)]
         struct UnifiedExecCodeModeResult {
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -547,7 +564,40 @@ impl ExecCommandToolOutput {
         sections.join("\n")
     }
 
+    fn recovery_result(&self) -> JsonValue {
+        let mut receipt = self.recoverable_output.clone();
+        if let Some(receipt) = &mut receipt
+            && self.exit_code.is_some()
+            && receipt.command_status == "running"
+        {
+            receipt.command_status = "completed".into();
+        }
+        let supported = receipt.as_ref().is_some_and(|r| r.artifact_id.is_some());
+        let policy = if supported {
+            TruncationPolicy::Tokens(
+                resolve_max_tokens(self.max_output_tokens)
+                    .min(receipt.as_ref().map_or(400, |r| r.preview_max_tokens)),
+            )
+        } else {
+            self.model_output_policy()
+        };
+        serde_json::json!({
+            "wall_time_seconds": self.wall_time.as_secs_f64(),
+            "exit_code": self.exit_code,
+            "session_id": self.process_id,
+            "recovery": receipt,
+            "preview": {
+                "format": "text",
+                "stream": "combined",
+                "text": self.truncated_output_with_policy(policy),
+            },
+        })
+    }
+
     fn response_text(&self) -> String {
+        if self.recoverable_output.is_some() {
+            return self.recovery_result().to_string();
+        }
         let header = self.response_header();
         let output_budget = with_serialization_allowance(self.truncation_policy)
             .byte_budget()

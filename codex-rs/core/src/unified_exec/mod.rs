@@ -51,6 +51,7 @@ mod async_watcher;
 mod errors;
 mod head_tail_buffer;
 mod oneshot;
+pub(crate) mod output_artifact;
 mod process;
 mod process_manager;
 mod process_state;
@@ -170,15 +171,32 @@ impl ProcessStore {
 pub(crate) struct UnifiedExecProcessManager {
     process_store: Mutex<ProcessStore>,
     max_write_stdin_yield_time_ms: u64,
+    pub(crate) output_artifacts: Option<Arc<output_artifact::OutputArtifactStore>>,
 }
 
 impl UnifiedExecProcessManager {
     pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
         Self {
             process_store: Mutex::new(ProcessStore::default()),
+            output_artifacts: None,
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
                 .max(MIN_EMPTY_YIELD_TIME_MS),
         }
+    }
+}
+
+impl UnifiedExecProcessManager {
+    pub(crate) fn with_output_artifacts(
+        mut self,
+        root: std::path::PathBuf,
+        config: codex_config::config_toml::RecoverableExecOutputConfig,
+    ) -> Self {
+        if config.enabled {
+            self.output_artifacts = Some(Arc::new(output_artifact::OutputArtifactStore::new(
+                root, config,
+            )));
+        }
+        self
     }
 }
 

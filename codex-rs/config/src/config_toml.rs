@@ -700,6 +700,45 @@ pub struct ToolsToml {
     pub web_search: Option<WebSearchToolConfig>,
     pub experimental_request_user_input: Option<ExperimentalRequestUserInput>,
     pub update_plan: Option<UpdatePlanToolConfig>,
+    pub recoverable_exec_output: Option<RecoverableExecOutputConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct RecoverableExecOutputConfig {
+    pub enabled: bool,
+    pub artifact_max_bytes: u64,
+    pub session_max_bytes: u64,
+    pub global_max_bytes: u64,
+    pub ttl_seconds: u64,
+    pub preview_max_tokens: usize,
+}
+impl Default for RecoverableExecOutputConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            artifact_max_bytes: 8 * 1024 * 1024,
+            session_max_bytes: 128 * 1024 * 1024,
+            global_max_bytes: 1024 * 1024 * 1024,
+            ttl_seconds: 24 * 60 * 60,
+            preview_max_tokens: 400,
+        }
+    }
+}
+impl RecoverableExecOutputConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.artifact_max_bytes == 0
+            || self.artifact_max_bytes > 8 * 1024 * 1024
+            || self.session_max_bytes < self.artifact_max_bytes + 4096
+            || self.global_max_bytes < self.session_max_bytes
+            || self.ttl_seconds == 0
+            || self.ttl_seconds > 7 * 24 * 60 * 60
+            || self.preview_max_tokens > 2000
+        {
+            return Err("invalid recoverable exec output limits: artifact <= 8 MiB, session must include metadata, global >= session, TTL 1..604800, preview <= 2000".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
@@ -1100,6 +1139,28 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("TOML list of strings"));
         assert!(message.contains("comma-separated strings are not supported"));
+    }
+
+    #[test]
+    fn recoverable_exec_output_defaults_off_and_checks_bounds() {
+        let config: ConfigToml = toml::from_str("[tools.recoverable_exec_output]").expect("config");
+        let output = config
+            .tools
+            .expect("tools")
+            .recoverable_exec_output
+            .expect("output");
+        assert!(!output.enabled);
+        assert_eq!(output.artifact_max_bytes, 8 * 1024 * 1024);
+        output.validate().expect("default limits");
+        let invalid = super::RecoverableExecOutputConfig {
+            ttl_seconds: 0,
+            ..output
+        };
+        assert!(invalid.validate().is_err());
+        assert!(
+            toml::from_str::<ConfigToml>("[tools.recoverable_exec_output]\nunknown = true")
+                .is_err()
+        );
     }
 
     #[test]

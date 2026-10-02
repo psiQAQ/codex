@@ -114,6 +114,9 @@ pub(crate) struct UnifiedExecProcess {
     output_task: Option<JoinHandle<()>>,
     sandbox_type: Option<SandboxType>,
     timed_out: AtomicBool,
+    artifact_cancelled: AtomicBool,
+    artifact_capture: Option<Arc<super::output_artifact::ArtifactCapture>>,
+    artifact_fallback: Option<super::output_artifact::ArtifactReceipt>,
     _spawn_lifecycle: Option<SpawnLifecycleHandle>,
     // The shell may still need to replay this file after process startup returns.
     pub(crate) _shell_snapshot: Option<Arc<ShellSnapshotFile>>,
@@ -157,6 +160,9 @@ impl UnifiedExecProcess {
             output_task: None,
             sandbox_type,
             timed_out: AtomicBool::new(false),
+            artifact_cancelled: AtomicBool::new(false),
+            artifact_capture: None,
+            artifact_fallback: None,
             _spawn_lifecycle: spawn_lifecycle,
             _shell_snapshot: None,
         }
@@ -228,15 +234,62 @@ impl UnifiedExecProcess {
         }
     }
 
+    pub(super) fn artifact_receipt(&self) -> Option<super::output_artifact::ArtifactReceipt> {
+        self.artifact_capture
+            .as_ref()
+            .map(|capture| capture.receipt())
+            .or_else(|| {
+                self.artifact_fallback.clone().map(|mut receipt| {
+                    let state = self.state_rx.borrow().clone();
+                    receipt.command_status = if self.timed_out() {
+                        "timed_out"
+                    } else if self.artifact_cancelled.load(Ordering::Acquire) {
+                        "cancelled"
+                    } else if state.failure_message.is_some() {
+                        "failed"
+                    } else if self.has_exited() {
+                        if self.exit_code().is_some() {
+                            "completed"
+                        } else {
+                            "failed"
+                        }
+                    } else {
+                        "running"
+                    }
+                    .into();
+                    receipt
+                })
+            })
+    }
+
+    pub(super) fn set_artifact_fallback(&mut self, reason: &str) {
+        self.artifact_fallback = Some(super::output_artifact::ArtifactReceipt::unavailable(reason));
+    }
+
     pub(super) fn mark_timed_out(&self) {
         self.timed_out.store(true, Ordering::Release);
+        if let Some(capture) = &self.artifact_capture {
+            capture.record_command_status("timed_out");
+        }
     }
 
     pub(super) fn timed_out(&self) -> bool {
         self.timed_out.load(Ordering::Acquire)
     }
 
+    fn record_cancellation(&self) {
+        if !self.has_exited() && !self.timed_out() {
+            self.artifact_cancelled.store(true, Ordering::Release);
+            if let Some(capture) = &self.artifact_capture {
+                capture.record_command_status("cancelled");
+            }
+        }
+    }
+
     fn finish_termination(&self) {
+        if let Some(capture) = &self.artifact_capture {
+            capture.stop();
+        }
         self.output.cancellation_token.cancel();
         if let Some(output_task) = &self.output_task {
             output_task.abort();
@@ -244,6 +297,7 @@ impl UnifiedExecProcess {
     }
 
     pub(super) fn terminate(&self) {
+        self.record_cancellation();
         match &self.process_handle {
             ProcessHandle::Local(process_handle) => process_handle.terminate(),
             ProcessHandle::ExecServer(process_handle) => {
@@ -257,6 +311,7 @@ impl UnifiedExecProcess {
     }
 
     pub(super) async fn terminate_confirmed(&self) -> Result<(), UnifiedExecError> {
+        self.record_cancellation();
         match &self.process_handle {
             ProcessHandle::Local(process_handle) => process_handle.terminate(),
             ProcessHandle::ExecServer(process_handle) => {
@@ -355,10 +410,28 @@ impl UnifiedExecProcess {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) async fn from_spawned(
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
         spawn_lifecycle: SpawnLifecycleHandle,
+    ) -> Result<Self, UnifiedExecError> {
+        Self::from_spawned_with_capture(
+            spawned,
+            sandbox_type,
+            spawn_lifecycle,
+            /*capture*/ None,
+            /*fallback*/ None,
+        )
+        .await
+    }
+
+    pub(super) async fn from_spawned_with_capture(
+        spawned: SpawnedPty,
+        sandbox_type: SandboxType,
+        spawn_lifecycle: SpawnLifecycleHandle,
+        capture: Option<Arc<super::output_artifact::ArtifactCapture>>,
+        fallback: Option<super::output_artifact::ArtifactReceipt>,
     ) -> Result<Self, UnifiedExecError> {
         let SpawnedPty {
             session: process_handle,
@@ -366,17 +439,28 @@ impl UnifiedExecProcess {
             stderr_rx,
             mut exit_rx,
         } = spawned;
-        let output_rx = codex_utils_pty::combine_output_receivers(stdout_rx, stderr_rx);
         let mut managed = Self::new(
             ProcessHandle::Local(Box::new(process_handle)),
             Some(sandbox_type),
             Some(spawn_lifecycle),
         );
-        managed.output_task = Some(Self::spawn_local_output_task(
-            output_rx,
-            managed.output_handles().clone(),
-            managed.output_tx.clone(),
-        ));
+        managed.artifact_capture = capture.clone();
+        managed.artifact_fallback = fallback;
+        managed.output_task = Some(if let Some(capture) = capture {
+            Self::spawn_captured_output_task(
+                stdout_rx,
+                stderr_rx,
+                managed.output_handles().clone(),
+                managed.output_tx.clone(),
+                capture,
+            )
+        } else {
+            Self::spawn_local_output_task(
+                codex_utils_pty::combine_output_receivers(stdout_rx, stderr_rx),
+                managed.output_handles().clone(),
+                managed.output_tx.clone(),
+            )
+        });
 
         match exit_rx.try_recv() {
             Ok(exit_code) => {
@@ -401,8 +485,16 @@ impl UnifiedExecProcess {
         tokio::spawn({
             let state_tx = managed.state_tx.clone();
             let cancellation_token = managed.output.cancellation_token.clone();
+            let capture = managed.artifact_capture.clone();
             async move {
                 let exit_code = exit_rx.await.ok();
+                if let Some(capture) = capture {
+                    capture.record_command_status(if exit_code.is_some() {
+                        "completed"
+                    } else {
+                        "failed"
+                    });
+                }
                 let state = state_tx.borrow().clone();
                 let _ = state_tx.send_replace(state.exited(exit_code));
                 cancellation_token.cancel();
@@ -616,6 +708,44 @@ impl UnifiedExecProcess {
         })
     }
 
+    fn spawn_captured_output_task(
+        mut stdout: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        mut stderr: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        output: OutputHandles,
+        output_tx: broadcast::Sender<Vec<u8>>,
+        capture: Arc<super::output_artifact::ArtifactCapture>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let _guard = OutputTaskGuard {
+                output_closed: Arc::clone(&output.output_closed),
+                output_closed_notify: Arc::clone(&output.output_closed_notify),
+            };
+            let mut stdout_open = true;
+            let mut stderr_open = true;
+            loop {
+                use super::output_artifact::OutputStream;
+                let (stream, chunk) = tokio::select! {
+                    chunk = stdout.recv(), if stdout_open => (OutputStream::Stdout, chunk),
+                    chunk = stderr.recv(), if stderr_open => (OutputStream::Stderr, chunk),
+                    else => break,
+                };
+                if let Some(chunk) = chunk {
+                    // Capture stream-labelled bytes before the first lossy merge or buffer.
+                    capture.observe(stream, &chunk);
+                    output.output_buffer.lock().await.push_chunk(&chunk);
+                    let _ = output_tx.send(chunk);
+                    output.output_notify.notify_waiters();
+                } else {
+                    match stream {
+                        OutputStream::Stdout => stdout_open = false,
+                        OutputStream::Stderr => stderr_open = false,
+                    }
+                }
+            }
+            capture.streams_closed();
+        })
+    }
+
     fn spawn_local_output_task(
         mut receiver: tokio::sync::broadcast::Receiver<Vec<u8>>,
         output_handles: OutputHandles,
@@ -654,6 +784,13 @@ impl UnifiedExecProcess {
     }
 
     fn signal_exit(&self, exit_code: Option<i32>) {
+        if let Some(capture) = &self.artifact_capture {
+            capture.record_command_status(if exit_code.is_some() {
+                "completed"
+            } else {
+                "failed"
+            });
+        }
         let state = self.state_rx.borrow().clone();
         let _ = self.state_tx.send_replace(state.exited(exit_code));
         self.output.cancellation_token.cancel();

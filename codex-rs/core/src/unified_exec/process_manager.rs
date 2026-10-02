@@ -824,6 +824,7 @@ impl UnifiedExecProcessManager {
         };
 
         let response = ExecCommandToolOutput {
+            recoverable_output: process.artifact_receipt(),
             event_call_id: context.call_id.clone(),
             chunk_id,
             wall_time,
@@ -1092,6 +1093,7 @@ impl UnifiedExecProcessManager {
         };
 
         let response = ExecCommandToolOutput {
+            recoverable_output: process.artifact_receipt(),
             event_call_id,
             chunk_id,
             wall_time,
@@ -1353,7 +1355,11 @@ impl UnifiedExecProcessManager {
             }
             .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
             spawn_lifecycle.after_spawn();
-            return UnifiedExecProcess::from_exec_server_started(started).await;
+            let mut process = UnifiedExecProcess::from_exec_server_started(started).await?;
+            if self.output_artifacts.is_some() {
+                process.set_artifact_fallback("unsupported_backend");
+            }
+            return Ok(process);
         }
 
         // TODO(anp): Keep PathUri through the local PTY/process launch boundary.
@@ -1425,7 +1431,45 @@ impl UnifiedExecProcessManager {
         spawn_lifecycle.after_spawn();
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
-        UnifiedExecProcess::from_spawned(spawned, request.sandbox, spawn_lifecycle).await
+        let (capture, fallback) = if let Some(store) = &self.output_artifacts {
+            use super::output_artifact::ArtifactReceipt;
+            if tty || request.sandbox == codex_sandboxing::SandboxType::WindowsRestrictedToken {
+                (
+                    None,
+                    Some(ArtifactReceipt::unavailable("unsupported_backend")),
+                )
+            } else if let (Some(context), Some(environment_id)) =
+                (tool_ctx, request.network_environment_id.as_ref())
+            {
+                match store
+                    .begin(
+                        context.session.thread_id().to_string(),
+                        context.session.session_id().to_string(),
+                        environment_id.clone(),
+                        context.call_id.clone(),
+                    )
+                    .await
+                {
+                    Ok(capture) => (Some(capture), None),
+                    Err(reason) => (None, Some(ArtifactReceipt::unavailable(reason))),
+                }
+            } else {
+                (
+                    None,
+                    Some(ArtifactReceipt::unavailable("identity_unavailable")),
+                )
+            }
+        } else {
+            (None, None)
+        };
+        UnifiedExecProcess::from_spawned_with_capture(
+            spawned,
+            request.sandbox,
+            spawn_lifecycle,
+            capture,
+            fallback,
+        )
+        .await
     }
 
     #[tracing::instrument(
