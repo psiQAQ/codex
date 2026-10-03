@@ -385,8 +385,8 @@ jobs:
             # Keep this aligned with the fast Windows Bazel test job: use
             # Linux RBE for clippy build actions while targeting Windows
             # gnullvm. Fork/community PRs without the BuildBuddy secret fall
-            # back inside `run-bazel-ci.sh` to the previous local Windows MSVC
-            # host-platform shape.
+            # back inside `run-bazel-ci.sh` to native Windows gnullvm for
+            # both Rust and C/C++ build actions.
             bazel_wrapper_args+=(--windows-cross-compile)
             bazel_target_list_args+=(--windows-cross-compile)
             if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then

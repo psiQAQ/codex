@@ -259,10 +259,10 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # Windows cross-compilation depends on authenticated RBE. Preserve the local
-  # Windows build shape when credentials are unavailable.
+  # Native Windows uses gnullvm for both Rust and hermetic LLVM C libraries.
+  # An MSVC host also changes the default Rust target and mixes incompatible ABIs.
   ci_config=ci-windows
-  windows_msvc_host_platform=1
+  windows_msvc_host_platform=0
 fi
 
 post_config_bazel_args=()
@@ -303,10 +303,8 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUI
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # The Windows cross-compile config depends on authenticated remote
-  # execution. When credentials are unavailable, keep the local build shape
-  # and its lower concurrency cap.
-  post_config_bazel_args+=(--jobs=8)
+  # Keep native Rust tools and target libraries on the same gnullvm ABI.
+  post_config_bazel_args+=(--host_platform=//:local_windows --jobs=8)
 fi
 
 if [[ -n "${BAZEL_REPO_CONTENTS_CACHE:-}" ]]; then
