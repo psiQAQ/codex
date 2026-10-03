@@ -60,6 +60,7 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          windows-voice-tools: ${{ github.repository_owner != 'openai' }}
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
@@ -156,7 +157,10 @@ jobs:
       - name: Test BuildBuddy Bazel wrapper
         if: matrix.shard == 1
         shell: pwsh
-        run: python .github/scripts/test_run_bazel_with_buildbuddy.py
+        run: |
+          python .github/scripts/test_run_bazel_with_buildbuddy.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python .github/scripts/test_run_bazel_ci.py
 
       - name: Test Windows Bazel target selector
         if: matrix.shard == 1
@@ -167,6 +171,7 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          windows-voice-tools: ${{ github.repository_owner != 'openai' }}
           target: x86_64-pc-windows-gnullvm
           # Reuse the former monolithic Windows test cache for restores. Do
           # not save it from every shard below; duplicate uploads would sit on
@@ -267,6 +272,7 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          windows-voice-tools: ${{ github.repository_owner != 'openai' }}
           target: x86_64-pc-windows-msvc
           cache-scope: bazel-${{ github.job }}
 
@@ -359,6 +365,7 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          windows-voice-tools: ${{ github.repository_owner != 'openai' }}
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
@@ -458,6 +465,7 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
+          windows-voice-tools: ${{ github.repository_owner != 'openai' }}
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
