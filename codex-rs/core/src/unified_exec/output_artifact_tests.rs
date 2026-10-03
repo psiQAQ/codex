@@ -11,7 +11,13 @@ fn store(artifact: u64, session: u64, global: u64) -> (TempDir, Arc<OutputArtifa
         global_max_bytes: global,
         ..Default::default()
     };
-    let store = Arc::new(OutputArtifactStore::new(root.path().join("output"), config));
+    let store = Arc::new(OutputArtifactStore::new(
+        root.path()
+            .canonicalize()
+            .expect("canonical temporary root")
+            .join("output"),
+        config,
+    ));
     (root, store)
 }
 fn read_request(id: Uuid) -> QueryRequest {
@@ -181,7 +187,10 @@ async fn global_quota_applies_across_store_instances() {
         .await
         .expect("capture");
     let second = Arc::new(OutputArtifactStore::new(
-        root.path().join("output"),
+        root.path()
+            .canonicalize()
+            .expect("canonical temporary root")
+            .join("output"),
         first.config.clone(),
     ));
     assert!(
@@ -438,7 +447,13 @@ async fn expired_objects_refuse_reads_and_cleanup_respects_live_capture() {
     );
     let mut config = store.config.clone();
     config.ttl_seconds = 1;
-    let store = Arc::new(OutputArtifactStore::new(root.path().join("output"), config));
+    let store = Arc::new(OutputArtifactStore::new(
+        root.path()
+            .canonicalize()
+            .expect("canonical temporary root")
+            .join("output"),
+        config,
+    ));
     let capture = store
         .begin(
             "thread".into(),
@@ -720,7 +735,13 @@ async fn expired_unleased_object_reclaims_exact_global_quota_on_first_admission(
         ttl_seconds: 1,
         ..Default::default()
     };
-    let store = Arc::new(OutputArtifactStore::new(root.path().join("output"), config));
+    let store = Arc::new(OutputArtifactStore::new(
+        root.path()
+            .canonicalize()
+            .expect("canonical temporary root")
+            .join("output"),
+        config,
+    ));
     let capture = store
         .begin(
             "thread".into(),
@@ -1199,7 +1220,11 @@ fn quota_admission_fixture() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn separate_process_quota_and_expired_active_lease_are_enforced() {
     let root = tempfile::tempdir().expect("fixture root");
-    let cache = root.path().join("output");
+    let cache = root
+        .path()
+        .canonicalize()
+        .expect("canonical temporary root")
+        .join("output");
     let config = RecoverableExecOutputConfig {
         enabled: true,
         artifact_max_bytes: 1024,

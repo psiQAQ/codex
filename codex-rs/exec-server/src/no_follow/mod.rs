@@ -84,7 +84,11 @@ mod cache_tests {
     #[test]
     fn cache_creation_is_exclusive_and_does_not_truncate() {
         let root = tempfile::tempdir().expect("temporary directory");
-        let cache = root.path().join("cache");
+        let root_path = root
+            .path()
+            .canonicalize()
+            .expect("canonical temporary root");
+        let cache = root_path.join("cache");
         create_private_cache_directory(&cache).expect("private cache");
         let path = cache.join("object");
         let mut file = open_cache_file(&path, /*create_new*/ true).expect("new file");
@@ -97,11 +101,15 @@ mod cache_tests {
     #[test]
     fn cache_removal_refuses_directories() {
         let root = tempfile::tempdir().expect("temporary directory");
-        let directory = root.path().join("directory");
+        let root_path = root
+            .path()
+            .canonicalize()
+            .expect("canonical temporary root");
+        let directory = root_path.join("directory");
         std::fs::create_dir(&directory).expect("directory");
         assert!(remove_cache_file(&directory).is_err());
         assert!(directory.is_dir());
-        let path = root.path().join("regular");
+        let path = root_path.join("regular");
         drop(open_cache_file(&path, /*create_new*/ true).expect("file"));
         remove_cache_file(&path).expect("regular file removal");
         assert!(!path.exists());
@@ -111,14 +119,19 @@ mod cache_tests {
     #[test]
     fn cache_operations_reject_leaf_and_ancestor_symlinks() {
         let root = tempfile::tempdir().expect("temporary directory");
-        let target = root.path().join("target");
+        let root_path = root
+            .path()
+            .canonicalize()
+            .expect("canonical temporary root");
+        let target = root_path.join("target");
         std::fs::create_dir(&target).expect("target");
-        let leaf = root.path().join("leaf");
+        let leaf = root_path.join("leaf");
         std::fs::write(&leaf, b"original").expect("fixture");
-        let link = root.path().join("link");
+        drop(open_cache_file(&leaf, /*create_new*/ false).expect("regular fixture"));
+        let link = root_path.join("link");
         std::os::unix::fs::symlink(&leaf, &link).expect("symlink");
         assert!(open_cache_file(&link, /*create_new*/ false).is_err());
-        let parent = root.path().join("parent");
+        let parent = root_path.join("parent");
         std::os::unix::fs::symlink(&target, &parent).expect("parent symlink");
         assert!(open_cache_file(&parent.join("object"), /*create_new*/ true).is_err());
         assert!(create_private_cache_directory(&parent.join("cache")).is_err());
@@ -129,9 +142,13 @@ mod cache_tests {
     #[test]
     fn cache_operations_reject_ancestor_junction() {
         let root = tempfile::tempdir().expect("temporary directory");
-        let target = root.path().join("target");
+        let root_path = root
+            .path()
+            .canonicalize()
+            .expect("canonical temporary root");
+        let target = root_path.join("target");
         std::fs::create_dir(&target).expect("target");
-        let junction = root.path().join("junction");
+        let junction = root_path.join("junction");
         let output = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
             .arg(&junction)
