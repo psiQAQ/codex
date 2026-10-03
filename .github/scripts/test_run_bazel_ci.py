@@ -63,6 +63,15 @@ class WindowsVoiceBazelEnvironmentTest(unittest.TestCase):
             )
             return result, args
 
+    def test_windows_workspace_status_uses_cmd_with_local_and_remote_builds(self):
+        for remote in (False, True):
+            with self.subTest(remote=remote):
+                result, args = self.invoke("Windows", remote=remote)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(
+                    "--workspace_status_command=./scripts/workspace-status.cmd", args
+                )
+
     def test_native_windows_voice_inputs_reach_bazel_analysis(self):
         result, args = self.invoke("Windows")
         self.assertEqual(result.returncode, 0, result.stderr)
