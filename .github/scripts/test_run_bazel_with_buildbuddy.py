@@ -48,6 +48,33 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ["build", "--", "//codex-rs/cli:codex"],
         )
 
+    def test_keyless_ci_build_does_not_duplicate_outputs_in_disk_cache(self) -> None:
+        for command in ("build", "test", "run", "coverage"):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        [command, "--", "//codex-rs/cli:codex"],
+                        {"GITHUB_ACTIONS": "true"},
+                    ),
+                    [command, "--disk_cache=", "--", "//codex-rs/cli:codex"],
+                )
+
+    def test_keyless_ci_preserves_explicit_disk_cache_and_read_only_commands(
+        self,
+    ) -> None:
+        for args in (
+            ["build", "--disk_cache=custom-cache", "//codex-rs/cli:codex"],
+            ["info", "bazel-testlogs"],
+            ["query", "//..."],
+        ):
+            with self.subTest(args=args):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        args, {"GITHUB_ACTIONS": "true"}
+                    ),
+                    args,
+                )
+
     def test_program_arguments_after_separator_do_not_select_or_lose_rbe(self) -> None:
         args = ["run", "//codex-rs/cli:codex", "--", "--config=remote"]
 
@@ -196,6 +223,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 "--noexperimental_remote_repo_contents_cache",
                 "build",
                 "//codex-rs/...",
+                "--disk_cache=",
             ],
         )
         self.assertEqual(
@@ -211,6 +239,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 "--experimental_remote_repo_contents_cache",
                 "build",
                 "//codex-rs/...",
+                "--disk_cache=",
             ],
         )
 
