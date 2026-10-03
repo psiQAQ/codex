@@ -898,6 +898,21 @@ mod tests {
     #[tokio::test]
     async fn handle_escalate_session_accepts_received_fds_that_overlap_destinations()
     -> anyhow::Result<()> {
+        const CHILD_ENV: &str = "CODEX_TEST_ESCALATION_FD_OVERLAP";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Stdin is process-global. Isolate its temporary closure from the
+            // other tests' sockets and Tokio reactors, including runtime setup.
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "unix::escalate_server::tests::handle_escalate_session_accepts_received_fds_that_overlap_destinations",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()?;
+            assert!(output.status.success(), "{output:?}");
+            return Ok(());
+        }
         let _guard = ESCALATE_SERVER_TEST_LOCK.acquire().await?;
         let mut pipe_fds = [0; 2];
         if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } == -1 {
@@ -906,15 +921,6 @@ mod tests {
         let read_end = unsafe { std::os::fd::OwnedFd::from_raw_fd(pipe_fds[0]) };
         let mut write_end = unsafe { std::fs::File::from_raw_fd(pipe_fds[1]) };
 
-        // Force the receive-side overlap case for stdin.
-        //
-        // SCM_RIGHTS installs received descriptors into the lowest available fd
-        // numbers in the receiving process. The pipe is opened first so its
-        // read end does not consume fd 0. After stdin is temporarily closed,
-        // receiving `read_end` should reuse descriptor 0. The message below
-        // also asks the server to map that received fd to destination fd 0, so
-        // the pre-exec dup2 loop exercises the src_fd == dst_fd case.
-        let stdin_restore = RestoredFd::close_temporarily(libc::STDIN_FILENO)?;
         let (server, client) = AsyncSocket::pair()?;
         let server_task = tokio::spawn(handle_escalate_session_with_policy(
             server,
@@ -947,6 +953,9 @@ mod tests {
             response
         );
 
+        // Open the transport before freeing stdin so SCM_RIGHTS can install
+        // the received pipe at fd 0 and exercise the src_fd == dst_fd case.
+        let stdin_restore = RestoredFd::close_temporarily(libc::STDIN_FILENO)?;
         client
             .send_with_fds(
                 SuperExecMessage {
@@ -963,9 +972,9 @@ mod tests {
             0, result.exit_code,
             "expected the escalated child to read the sent stdin payload even when the received fd reuses fd 0"
         );
+        let result = server_task.await?;
         drop(stdin_restore);
-
-        server_task.await?
+        result
     }
 
     #[tokio::test]
