@@ -75,6 +75,7 @@ class WindowsVoiceBazelEnvironmentTest(unittest.TestCase):
     def test_native_windows_keeps_rust_and_c_on_gnullvm(self):
         result, args = self.invoke("Windows")
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--config=ci-windows", args)
         self.assertIn("--host_platform=//:local_windows", args)
         self.assertNotIn("--host_platform=//:local_windows_msvc", args)
 

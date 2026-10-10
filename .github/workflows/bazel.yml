@@ -421,6 +421,16 @@ jobs:
           # that the Bazel test job uses.
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            shard: 1
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            shard: 2
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            shard: 3
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            shard: 4
           - os: ${{ github.repository_owner == 'openai' && 'macos-15-xlarge' || 'macos-15' }}
             target: aarch64-apple-darwin
           - os: windows-latest
@@ -429,7 +439,7 @@ jobs:
               group: ${{ github.event.repository.name }}-runners
               labels: ${{ github.event.repository.name }}-windows-x64
     runs-on: ${{ github.repository_owner == 'openai' && matrix.runs_on || matrix.os }}
-    name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
+    name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}${{ matrix.shard > 0 && format(' shard {0}/4', matrix.shard) || '' }}
     environment:
       name: bazel
       deployment: false
@@ -445,10 +455,11 @@ jobs:
         with:
           windows-voice-tools: ${{ github.repository_owner != 'openai' }}
           target: ${{ matrix.target }}
-          cache-scope: bazel-${{ github.job }}
+          cache-scope: bazel-${{ github.job }}-${{ matrix.shard || 0 }}
 
       - name: bazel build --config=clippy lint targets
         env:
+          BAZEL_CLIPPY_SHARD: ${{ matrix.shard }}
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
         run: |
@@ -475,7 +486,22 @@ jobs:
             fi
           fi
 
-          bazel_target_lines="$(./scripts/list-bazel-clippy-targets.sh "${bazel_target_list_args[@]}")"
+          if [[ -n "${BAZEL_CLIPPY_SHARD:-}" ]]; then
+            bazel_clippy_args+=(--skip_incompatible_explicit_targets)
+            shard_directory=out/ci-bazel-shards/clippy
+            mkdir -p "${shard_directory}"
+            # Expand the normal Rust roots and retain manual test binaries so
+            # sharding preserves inline test lint coverage.
+            bazel_clippy_query='(kind(".* rule", //codex-rs/...) except //codex-rs/v8-poc:all except attr(tags, "manual", //codex-rs/...)) union kind("rust_test rule", attr(tags, "manual", //codex-rs/... except //codex-rs/v8-poc/...))'
+            ./.github/scripts/run-bazel-query-ci.sh --output=label -- "${bazel_clippy_query}" \
+              | grep -v -- '-windows-cross-bin$' | LC_ALL=C sort > "${shard_directory}/targets.txt"
+            python3 .github/scripts/select_windows_bazel_targets.py \
+              --uniform-weights --shard "${BAZEL_CLIPPY_SHARD}" --shard-count 4 \
+              < "${shard_directory}/targets.txt" > "${shard_directory}/selected.txt"
+            bazel_target_lines="$(cat "${shard_directory}/selected.txt")"
+          else
+            bazel_target_lines="$(./scripts/list-bazel-clippy-targets.sh "${bazel_target_list_args[@]}")"
+          fi
           bazel_targets=()
           while IFS= read -r target; do
             bazel_targets+=("${target}")
@@ -495,7 +521,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: bazel-execution-logs-clippy-${{ matrix.target }}
+          name: bazel-execution-logs-clippy-${{ matrix.target }}-${{ matrix.shard || 0 }}
           path: ${{ runner.temp }}/bazel-execution-logs
           if-no-files-found: ignore
 

@@ -91,7 +91,7 @@ print_bazel_test_log_tails() {
   local testlogs_dir
 
   local -a bazel_info_args=(info)
-  if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if [[ -n "${BUILDBUDDY_API_KEY:-}" || "$ci_config" == "ci-windows" ]]; then
     # `bazel info` needs the same CI config as the failed test invocation so
     # platform-specific output roots match. On Windows, omitting `ci-windows`
     # would point at `local_windows-fastbuild` even when the test ran with the
@@ -403,6 +403,11 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   bazel_run_args+=("--config=${ci_config}")
 else
   echo "BuildBuddy API key is not available; using local Bazel configuration."
+  if [[ "$ci_config" == "ci-windows" ]]; then
+    # Native Windows needs the existing test filters and CI options. This
+    # configuration has no remote endpoint and is safe without credentials.
+    bazel_run_args+=("--config=${ci_config}")
+  fi
 fi
 if (( ${#post_config_bazel_args[@]} > 0 )); then
   bazel_run_args+=("${post_config_bazel_args[@]}")
