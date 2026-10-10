@@ -215,6 +215,47 @@ fn validate_regular_file(file: &std::fs::File, path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+pub(super) fn create_private_cache_directory(path: &Path) -> io::Result<()> {
+    // The cache inherits the configured user's Codex home ACL.
+    open_or_create_directory(path)
+}
+
+pub(super) fn remove_cache_file(path: &Path) -> io::Result<()> {
+    let handle = open_handle(
+        path,
+        DELETE | FILE_READ_ATTRIBUTES,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+    )?;
+    let file = std::fs::File::from(handle);
+    validate_regular_file(&file, path)?;
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    let result = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfo,
+            (&raw const disposition).cast(),
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
+    if result == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+pub(super) fn open_cache_file(path: &Path, create_new: bool) -> io::Result<std::fs::File> {
+    let handle = open_handle(
+        path,
+        FILE_GENERIC_READ | FILE_WRITE_DATA,
+        if create_new { FILE_CREATE } else { FILE_OPEN },
+        FILE_NON_DIRECTORY_FILE,
+    )?;
+    let file = std::fs::File::from(handle);
+    validate_regular_file(&file, path)?;
+    Ok(file)
+}
+
 pub(super) async fn write_file(path: PathBuf, contents: Vec<u8>) -> io::Result<()> {
     tokio::task::spawn_blocking(move || {
         let handle = open_handle(

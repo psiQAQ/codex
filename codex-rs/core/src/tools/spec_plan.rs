@@ -1114,6 +1114,10 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
         // resumable process or write_stdin authority prohibited by policy.
         registry.add(ExecCommandHandler::one_shot(options));
     }
+    if turn_context.config.recoverable_exec_output.enabled {
+        registry.add(crate::tools::handlers::OutputArtifactHandler::read());
+        registry.add(crate::tools::handlers::OutputArtifactHandler::search());
+    }
 }
 
 fn unified_exec_should_include_shell_parameter(

@@ -3919,6 +3919,46 @@
         }
       ]
     },
+    "RecoverableExecOutputConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_max_bytes": {
+          "default": 8388608,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "global_max_bytes": {
+          "default": 1073741824,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "preview_max_tokens": {
+          "default": 400,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "session_max_bytes": {
+          "default": 134217728,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "ttl_seconds": {
+          "default": 86400,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "RemoteMessageBoardConfigToml": {
       "additionalProperties": false,
       "description": "Connection to a board provisioned by the research host.",
@@ -4408,6 +4448,9 @@
       "properties": {
         "experimental_request_user_input": {
           "$ref": "#/definitions/ExperimentalRequestUserInput"
+        },
+        "recoverable_exec_output": {
+          "$ref": "#/definitions/RecoverableExecOutputConfig"
         },
         "update_plan": {
           "$ref": "#/definitions/UpdatePlanToolConfig"

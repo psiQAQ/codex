@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Assign Windows Bazel test targets using checked-in duration estimates."""
+"""Assign Bazel test targets using duration estimates or uniform weights."""
 
 import argparse
 import sys
@@ -64,18 +64,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shard", required=True, type=int)
     parser.add_argument("--shard-count", required=True, type=int)
-    parser.add_argument(
+    weights = parser.add_mutually_exclusive_group()
+    weights.add_argument(
         "--durations",
         type=Path,
         default=DURATIONS_PATH,
         help="use this timing file instead of the checked-in default",
+    )
+    weights.add_argument(
+        "--uniform-weights",
+        action="store_true",
+        help="assign targets without platform timing estimates",
     )
     args = parser.parse_args()
     if not 1 <= args.shard <= args.shard_count:
         parser.error("shard must be between 1 and shard count")
 
     try:
-        durations = read_durations(args.durations)
+        durations = {} if args.uniform_weights else read_durations(args.durations)
         targets = sys.stdin.read().splitlines()
         assignments, loads = assign_targets(targets, durations, args.shard_count)
     except (OSError, ValueError) as error:
@@ -88,9 +94,11 @@ def main() -> None:
         )
 
     target_set = set(targets)
+    load_label = "unit loads" if args.uniform_weights else "estimated test-seconds"
     print(
-        f"Windows Bazel shards: targets={[len(assignment) for assignment in assignments]}, "
-        f"estimated test-seconds={loads}, default weights={len(target_set - durations.keys())}, "
+        f"Bazel shards: targets={[len(assignment) for assignment in assignments]}, "
+        f"{load_label}={loads}, "
+        f"default weights={len(target_set - durations.keys())}, "
         f"unused weights={len(durations.keys() - target_set)}. "
         f"Selected shard {args.shard}/{args.shard_count}.",
         file=sys.stderr,

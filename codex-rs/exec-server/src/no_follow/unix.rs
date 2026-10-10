@@ -113,6 +113,47 @@ pub(super) fn open_file_sync(path: &Path) -> io::Result<std::fs::File> {
     Ok(file)
 }
 
+pub(super) fn create_private_cache_directory(path: &Path) -> io::Result<()> {
+    let (parent, leaf) = parent(path)?;
+    match mkdirat(&parent, &leaf, Mode::from_raw_mode(0o700)) {
+        Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let directory = open_directory(&parent, &leaf)?;
+    let metadata = fstat(&directory).map_err(io::Error::from)?;
+    if metadata.st_mode & 0o077 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "cache directory must be private",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn remove_cache_file(path: &Path) -> io::Result<()> {
+    let _file = open_file_sync(path)?;
+    let (parent, leaf) = parent(path)?;
+    unlinkat(&parent, leaf, AtFlags::empty()).map_err(io::Error::from)
+}
+
+pub(super) fn open_cache_file(path: &Path, create_new: bool) -> io::Result<std::fs::File> {
+    let (parent, leaf) = parent(path)?;
+    let mut flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    if create_new {
+        flags |= OFlags::CREATE | OFlags::EXCL;
+    }
+    let file = std::fs::File::from(
+        openat(&parent, leaf, flags, Mode::from_raw_mode(0o600)).map_err(io::Error::from)?,
+    );
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cache entry is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
 pub(super) async fn write_file(path: PathBuf, contents: Vec<u8>) -> io::Result<()> {
     tokio::task::spawn_blocking(move || {
         let (parent, leaf) = parent(&path)?;

@@ -413,6 +413,7 @@ fn exec_command_tool_output_formats_truncated_response() {
         arguments: "{}".to_string(),
     };
     let output = ExecCommandToolOutput {
+        recoverable_output: None,
         event_call_id: "call-42".to_string(),
         chunk_id: "abc123".to_string(),
         wall_time: std::time::Duration::from_millis(1250),
@@ -470,6 +471,7 @@ fn exec_command_tool_output_reserves_metadata_budget_and_preserves_policy_units(
         (TruncationPolicy::Tokens(50), "tokens truncated"),
     ] {
         let response = ExecCommandToolOutput {
+            recoverable_output: None,
             event_call_id: "call-42".to_string(),
             chunk_id: "abc123".to_string(),
             wall_time: std::time::Duration::from_millis(/*millis*/ 1250),
@@ -514,6 +516,7 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
     )
     .into_bytes();
     let mut output = ExecCommandToolOutput {
+        recoverable_output: None,
         event_call_id: "call-omitted".to_string(),
         chunk_id: "abc123".to_string(),
         wall_time: std::time::Duration::from_millis(/*millis*/ 1250),
@@ -553,4 +556,46 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
     assert!(text.contains("Original token count: 42000"));
     assert!(text.contains("Warning: truncated output (original token count: 42000)"));
     assert_eq!(text.matches(&marker).count(), 1);
+}
+
+#[test]
+fn recoverable_exec_receipt_stays_valid_with_zero_preview_budget() {
+    let id = uuid::Uuid::new_v4();
+    let mut receipt = crate::unified_exec::output_artifact::ArtifactReceipt::unavailable("fixture");
+    receipt.artifact_id = Some(id);
+    receipt.artifact_status = "available".into();
+    receipt.complete = true;
+    receipt.reason = None;
+    let output = ExecCommandToolOutput {
+        recoverable_output: Some(receipt),
+        event_call_id: "call".into(),
+        chunk_id: "chunk".into(),
+        wall_time: std::time::Duration::ZERO,
+        raw_output: b"{\"original\": \"preview\"}".to_vec(),
+        truncation_policy: TruncationPolicy::Tokens(0),
+        max_output_tokens: Some(0),
+        process_id: None,
+        exit_code: Some(17),
+        original_token_count: Some(5),
+        output_omitted_bytes: None,
+        hook_command: None,
+    };
+    let payload = ToolPayload::Function {
+        arguments: "{}".into(),
+    };
+    let response = output.to_response_item("call", &payload);
+    let ResponseInputItem::FunctionCallOutput { output: result, .. } = response else {
+        panic!("function output");
+    };
+    let text = result.body.to_text().expect("typed receipt");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+    assert_eq!(value["exit_code"], 17);
+    assert_eq!(value["recovery"]["artifact_id"], id.to_string());
+    assert_eq!(value["recovery"]["complete"], true);
+    assert_eq!(value, output.code_mode_result(&payload));
+    let limit = output
+        .fallback_token_limit_override()
+        .expect("history receipt budget");
+    assert!(limit * 4 >= text.len());
+    assert!(!output.log_output().contains("original"));
 }

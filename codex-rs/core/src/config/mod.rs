@@ -928,6 +928,7 @@ pub struct Config {
 
     /// Token budget applied when storing tool/function outputs in the context manager.
     pub tool_output_token_limit: Option<usize>,
+    pub recoverable_exec_output: codex_config::config_toml::RecoverableExecOutputConfig,
 
     /// Whether multi-agent tools are enabled through `[agents]`.
     pub agents_enabled: bool,
@@ -4086,6 +4087,11 @@ impl Config {
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
 
+        let recoverable_exec_output = cfg.tools.as_ref()
+            .and_then(|tools| tools.recoverable_exec_output.clone()).unwrap_or_default();
+        recoverable_exec_output.validate().map_err(|error| std::io::Error::new(
+            std::io::ErrorKind::InvalidInput, error))?;
+
         let log_dir = cfg
             .log_dir
             .as_ref()
@@ -4374,6 +4380,7 @@ impl Config {
                 })
                 .collect(),
             tool_output_token_limit: cfg.tool_output_token_limit,
+            recoverable_exec_output,
             agents_enabled,
             agent_max_threads,
             agent_default_subagent_model,

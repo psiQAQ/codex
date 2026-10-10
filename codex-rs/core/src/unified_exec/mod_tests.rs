@@ -204,6 +204,7 @@ async fn exec_command_with_tty(
     }
 
     Ok(ExecCommandToolOutput {
+        recoverable_output: None,
         event_call_id: context.call_id,
         chunk_id: generate_chunk_id(),
         wall_time,
@@ -1115,4 +1116,31 @@ async fn stdin_approval_observes_strict_review_enabled_while_queued() -> anyhow:
     ));
     assert!(session.terminate_background_terminal(process_id).await);
     Ok(())
+}
+
+#[tokio::test]
+async fn unsupported_artifact_timeout_receipt_keeps_command_terminal_state() {
+    let (terminate_started, _receiver) = watch::channel(false);
+    let allow_terminate = Arc::new(Notify::new());
+    let mut process = blocking_terminate_unified_process(
+        /*process_id*/ 31001,
+        terminate_started,
+        Arc::clone(&allow_terminate),
+    )
+    .await
+    .expect("process");
+    Arc::get_mut(&mut process)
+        .expect("exclusive process")
+        .set_artifact_fallback("unsupported_backend");
+    assert_eq!(
+        process.artifact_receipt().expect("receipt").command_status,
+        "running"
+    );
+    process.mark_timed_out();
+    let receipt = process.artifact_receipt().expect("receipt");
+    assert_eq!(receipt.command_status, "timed_out");
+    assert_eq!(receipt.reason.as_deref(), Some("unsupported_backend"));
+    assert!(receipt.artifact_id.is_none());
+    assert_eq!(process.exit_code(), Some(124));
+    allow_terminate.notify_one();
 }

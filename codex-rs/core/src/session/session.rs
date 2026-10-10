@@ -1719,6 +1719,9 @@ impl Session {
                 mcp_handler_cache: Default::default(),
                 unified_exec_manager: UnifiedExecProcessManager::new(
                     config.background_terminal_max_timeout,
+                ).with_output_artifacts(
+                    config.codex_home.join("recoverable-exec-output").to_path_buf(),
+                    config.recoverable_exec_output.clone(),
                 ),
                 elicitations: crate::elicitation::ElicitationService::new(),
                 shell_zsh_path: config.zsh_path.clone(),
