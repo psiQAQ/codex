@@ -64,6 +64,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
     ) -> None:
         for args in (
             ["build", "--disk_cache=custom-cache", "//codex-rs/cli:codex"],
+            ["build", "--disk_cache", "custom-cache", "//codex-rs/cli:codex"],
             ["info", "bazel-testlogs"],
             ["query", "//..."],
         ):

@@ -181,7 +181,8 @@ def bazel_args_with_remote_config(
         and env.get("GITHUB_ACTIONS") == "true"
         and args[command_idx] in {"build", "test", "run", "coverage"}
         and not any(
-            arg.startswith("--disk_cache=") for arg in configured_args[:separator_idx]
+            arg == "--disk_cache" or arg.startswith("--disk_cache=")
+            for arg in configured_args[:separator_idx]
         )
     ):
         cache_args.append("--disk_cache=")
