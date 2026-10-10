@@ -91,7 +91,7 @@ print_bazel_test_log_tails() {
   local testlogs_dir
 
   local -a bazel_info_args=(info)
-  if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if [[ -n "${BUILDBUDDY_API_KEY:-}" || "$ci_config" == "ci-windows" ]]; then
     # `bazel info` needs the same CI config as the failed test invocation so
     # platform-specific output roots match. On Windows, omitting `ci-windows`
     # would point at `local_windows-fastbuild` even when the test ran with the
@@ -259,10 +259,10 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # Windows cross-compilation depends on authenticated RBE. Preserve the local
-  # Windows build shape when credentials are unavailable.
+  # Native Windows uses gnullvm for both Rust and hermetic LLVM C libraries.
+  # An MSVC host also changes the default Rust target and mixes incompatible ABIs.
   ci_config=ci-windows
-  windows_msvc_host_platform=1
+  windows_msvc_host_platform=0
 fi
 
 post_config_bazel_args=()
@@ -303,10 +303,8 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUI
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # The Windows cross-compile config depends on authenticated remote
-  # execution. When credentials are unavailable, keep the local build shape
-  # and its lower concurrency cap.
-  post_config_bazel_args+=(--jobs=8)
+  # Keep native Rust tools and target libraries on the same gnullvm ABI.
+  post_config_bazel_args+=(--host_platform=//:local_windows --jobs=8)
 fi
 
 if [[ -n "${BAZEL_REPO_CONTENTS_CACHE:-}" ]]; then
@@ -327,6 +325,8 @@ if [[ -n "${CODEX_BAZEL_EXECUTION_LOG_COMPACT_DIR:-}" ]]; then
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+  # Bazel 9 workspace status does not honor the build:windows rc override.
+  post_config_bazel_args+=(--workspace_status_command=./scripts/workspace-status.cmd)
   pass_windows_build_env=1
   if [[ $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
     # Remote build actions execute on Linux RBE workers. Passing the Windows
@@ -336,6 +336,18 @@ if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
   fi
 
   if [[ $pass_windows_build_env -eq 1 ]]; then
+    if [[ -n "${VOICE_WINDOWS_BAZEL_REPOSITORY:-}" ]]; then
+      : "${VOICE_WINDOWS_SYSTEM_ROOT:?VOICE_WINDOWS_SYSTEM_ROOT is required for native voice actions}"
+      : "${VOICE_WINDOWS_HOST_ARCH:?VOICE_WINDOWS_HOST_ARCH is required for native voice actions}"
+      post_config_bazel_args+=(
+        "--inject_repository=voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
+        "--//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools"
+        "--action_env=SystemRoot=${VOICE_WINDOWS_SYSTEM_ROOT}"
+        "--host_action_env=SystemRoot=${VOICE_WINDOWS_SYSTEM_ROOT}"
+        "--action_env=PROCESSOR_ARCHITECTURE=${VOICE_WINDOWS_HOST_ARCH}"
+        "--host_action_env=PROCESSOR_ARCHITECTURE=${VOICE_WINDOWS_HOST_ARCH}"
+      )
+    fi
     windows_action_env_vars=(
       INCLUDE
       LIB
@@ -391,6 +403,11 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   bazel_run_args+=("--config=${ci_config}")
 else
   echo "BuildBuddy API key is not available; using local Bazel configuration."
+  if [[ "$ci_config" == "ci-windows" ]]; then
+    # Native Windows needs the existing test filters and CI options. This
+    # configuration has no remote endpoint and is safe without credentials.
+    bazel_run_args+=("--config=${ci_config}")
+  fi
 fi
 if (( ${#post_config_bazel_args[@]} > 0 )); then
   bazel_run_args+=("${post_config_bazel_args[@]}")

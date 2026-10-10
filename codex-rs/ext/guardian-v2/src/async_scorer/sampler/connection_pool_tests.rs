@@ -312,23 +312,27 @@ async fn supersession_closes_http_before_headers_and_while_draining_the_body() -
             "http://{}/v1",
             listener.local_addr()?,
         ))));
+        // Keep an accepted connection idle while classifications use other sockets.
+        let _idle_connection = TcpStream::connect(listener.local_addr()?).await?;
         let (received, mut requests) = tokio::sync::mpsc::unbounded_channel();
         let (closed, mut disconnects) = tokio::sync::mpsc::unbounded_channel();
         let mut tasks = tokio::task::JoinSet::new();
         tasks.spawn(async move {
             let mut connections = tokio::task::JoinSet::new();
-            let mut request_id = 0;
+            let request_ids = Arc::new(AtomicUsize::new(0));
             while let Ok((mut socket, _)) = listener.accept().await {
-                let mut method = [0; 4];
-                socket.read_exact(&mut method).await?;
-                if &method != b"POST" {
-                    continue;
-                }
-                request_id += 1;
                 let received = received.clone();
                 let closed = closed.clone();
                 let response = response.clone();
+                let request_ids = Arc::clone(&request_ids);
                 connections.spawn(async move {
+                    // An idle prewarmed connection must not block later POSTs.
+                    let mut method = [0; 4];
+                    socket.read_exact(&mut method).await?;
+                    if &method != b"POST" {
+                        return Ok::<_, std::io::Error>(0);
+                    }
+                    let request_id = request_ids.fetch_add(/*val*/ 1, Ordering::SeqCst) + 1;
                     socket.write_all(response.as_bytes()).await?;
                     let _ = received.send(request_id);
                     let result = tokio::io::copy(&mut socket, &mut tokio::io::sink()).await;

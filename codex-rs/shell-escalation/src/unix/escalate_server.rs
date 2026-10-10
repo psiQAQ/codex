@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
@@ -332,6 +334,9 @@ async fn handle_escalate_session_with_policy(
             let (program, args) = command
                 .split_first()
                 .ok_or_else(|| anyhow::anyhow!("prepared escalated command must not be empty"))?;
+            let fds = preserve_exec_fds(&msg.fds, &fds).context(
+                "failed to preserve received descriptors before initializing child stdio",
+            )?;
             let mut command = Command::new(program);
             command
                 .args(args)
@@ -347,7 +352,9 @@ async fn handle_escalate_session_with_policy(
             unsafe {
                 command.pre_exec(move || {
                     for (dst_fd, src_fd) in msg.fds.iter().zip(&fds) {
-                        libc::dup2(src_fd.as_raw_fd(), *dst_fd);
+                        if libc::dup2(src_fd.as_raw_fd(), *dst_fd) == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
                     }
                     Ok(())
                 });
@@ -379,6 +386,40 @@ async fn handle_escalate_session_with_policy(
         }
     }
     Ok(())
+}
+
+// Child stdio initialization happens before pre_exec and can overwrite fd 0-2.
+// Keep every source above stdio and every destination to preserve overlapping mappings.
+fn preserve_exec_fds(destinations: &[i32], sources: &[OwnedFd]) -> std::io::Result<Vec<OwnedFd>> {
+    if destinations.iter().any(|fd| *fd < 0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "destination descriptors must be nonnegative",
+        ));
+    }
+    let minimum_fd = destinations
+        .iter()
+        .copied()
+        .fold(libc::STDERR_FILENO, i32::max)
+        .checked_add(1)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "destination descriptor leaves no safe source range",
+            )
+        })?;
+    sources
+        .iter()
+        .map(|source| {
+            // F_DUPFD_CLOEXEC leaves the original descriptor intact and prevents exec leaks.
+            let copied =
+                unsafe { libc::fcntl(source.as_raw_fd(), libc::F_DUPFD_CLOEXEC, minimum_fd) };
+            if copied == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(unsafe { OwnedFd::from_raw_fd(copied) })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -848,6 +889,112 @@ mod tests {
         server_task.await?
     }
 
+    #[test]
+    fn preserved_exec_sources_have_cloexec_and_avoid_every_destination() -> anyhow::Result<()> {
+        let source: OwnedFd = std::fs::File::open("/dev/null")?.into();
+        let sources = preserve_exec_fds(&[0, 3, 8], &[source])?;
+        assert!(sources[0].as_raw_fd() > 8);
+        let flags = unsafe { libc::fcntl(sources[0].as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn preserved_exec_sources_reject_invalid_destination_ranges() {
+        for destinations in [vec![-1], vec![i32::MAX]] {
+            let error = preserve_exec_fds(&destinations, &[]).expect_err("invalid destination");
+            assert_eq!(std::io::ErrorKind::InvalidInput, error.kind());
+        }
+    }
+
+    #[tokio::test]
+    async fn escalated_exec_preserves_multiple_received_streams() -> anyhow::Result<()> {
+        let _guard = ESCALATE_SERVER_TEST_LOCK.acquire().await?;
+        let (first, mut first_writer) = std::os::unix::net::UnixStream::pair()?;
+        let (second, mut second_writer) = std::os::unix::net::UnixStream::pair()?;
+        first_writer.write_all(b"first-stream\n")?;
+        second_writer.write_all(b"second-stream\n")?;
+        drop(first_writer);
+        drop(second_writer);
+        let (server, client) = AsyncSocket::pair()?;
+        let server_task = tokio::spawn(handle_escalate_session_with_policy(
+            server,
+            Arc::new(DeterministicEscalationPolicy {
+                decision: EscalationDecision::escalate(EscalationExecution::Unsandboxed),
+            }),
+            Arc::new(ForwardingShellCommandExecutor),
+            CancellationToken::new(),
+            CancellationToken::new(),
+        ));
+        client
+            .send(EscalateRequest {
+                file: PathBuf::from("/bin/sh"),
+                argv: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "IFS= read -r first && IFS= read -r second <&3 && [ \"$first\" = first-stream ] && [ \"$second\" = second-stream ]".to_string(),
+                ],
+                workdir: AbsolutePathBuf::current_dir()?,
+                env: HashMap::new(),
+            })
+            .await?;
+        assert_eq!(
+            EscalateAction::Escalate,
+            client.receive::<EscalateResponse>().await?.action
+        );
+        client
+            .send_with_fds(
+                SuperExecMessage { fds: vec![0, 3] },
+                &[first.into(), second.into()],
+            )
+            .await?;
+        assert_eq!(0, client.receive::<SuperExecResult>().await?.exit_code);
+        server_task.await?
+    }
+
+    #[tokio::test]
+    async fn escalated_exec_reports_invalid_received_destination() -> anyhow::Result<()> {
+        let _guard = ESCALATE_SERVER_TEST_LOCK.acquire().await?;
+        let (server, client) = AsyncSocket::pair()?;
+        let server_task = tokio::spawn(handle_escalate_session_with_policy(
+            server,
+            Arc::new(DeterministicEscalationPolicy {
+                decision: EscalationDecision::escalate(EscalationExecution::Unsandboxed),
+            }),
+            Arc::new(ForwardingShellCommandExecutor),
+            CancellationToken::new(),
+            CancellationToken::new(),
+        ));
+        client
+            .send(EscalateRequest {
+                file: PathBuf::from("/bin/sh"),
+                argv: vec!["sh".to_string(), "-c".to_string(), "exit 0".to_string()],
+                workdir: AbsolutePathBuf::current_dir()?,
+                env: HashMap::new(),
+            })
+            .await?;
+        assert_eq!(
+            EscalateAction::Escalate,
+            client.receive::<EscalateResponse>().await?.action
+        );
+        let source: OwnedFd = std::fs::File::open("/dev/null")?.into();
+        client
+            .send_with_fds(SuperExecMessage { fds: vec![-1] }, &[source])
+            .await?;
+        let error = server_task
+            .await?
+            .expect_err("invalid destination must fail preparation");
+        assert_eq!(
+            std::io::ErrorKind::InvalidInput,
+            error
+                .downcast_ref::<std::io::Error>()
+                .expect("descriptor error")
+                .kind(),
+        );
+        Ok(())
+    }
+
     /// Saves a target descriptor, closes it, and restores it when dropped.
     ///
     /// The overlap regression test needs the next received `SCM_RIGHTS` handle
@@ -898,6 +1045,21 @@ mod tests {
     #[tokio::test]
     async fn handle_escalate_session_accepts_received_fds_that_overlap_destinations()
     -> anyhow::Result<()> {
+        const CHILD_ENV: &str = "CODEX_TEST_ESCALATION_FD_OVERLAP";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Stdin is process-global. Isolate its temporary closure from the
+            // other tests' sockets and Tokio reactors, including runtime setup.
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "unix::escalate_server::tests::handle_escalate_session_accepts_received_fds_that_overlap_destinations",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()?;
+            assert!(output.status.success(), "{output:?}");
+            return Ok(());
+        }
         let _guard = ESCALATE_SERVER_TEST_LOCK.acquire().await?;
         let mut pipe_fds = [0; 2];
         if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } == -1 {
@@ -906,15 +1068,6 @@ mod tests {
         let read_end = unsafe { std::os::fd::OwnedFd::from_raw_fd(pipe_fds[0]) };
         let mut write_end = unsafe { std::fs::File::from_raw_fd(pipe_fds[1]) };
 
-        // Force the receive-side overlap case for stdin.
-        //
-        // SCM_RIGHTS installs received descriptors into the lowest available fd
-        // numbers in the receiving process. The pipe is opened first so its
-        // read end does not consume fd 0. After stdin is temporarily closed,
-        // receiving `read_end` should reuse descriptor 0. The message below
-        // also asks the server to map that received fd to destination fd 0, so
-        // the pre-exec dup2 loop exercises the src_fd == dst_fd case.
-        let stdin_restore = RestoredFd::close_temporarily(libc::STDIN_FILENO)?;
         let (server, client) = AsyncSocket::pair()?;
         let server_task = tokio::spawn(handle_escalate_session_with_policy(
             server,
@@ -947,6 +1100,9 @@ mod tests {
             response
         );
 
+        // Open the transport before freeing stdin so SCM_RIGHTS can install
+        // the received pipe at fd 0 and exercise the src_fd == dst_fd case.
+        let stdin_restore = RestoredFd::close_temporarily(libc::STDIN_FILENO)?;
         client
             .send_with_fds(
                 SuperExecMessage {
@@ -963,9 +1119,9 @@ mod tests {
             0, result.exit_code,
             "expected the escalated child to read the sent stdin payload even when the received fd reuses fd 0"
         );
+        let result = server_task.await?;
         drop(stdin_restore);
-
-        server_task.await?
+        result
     }
 
     #[tokio::test]

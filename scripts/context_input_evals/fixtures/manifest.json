@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "seed": 20261002,
+  "model": "gpt-6.1-sol",
+  "effort": "high",
+  "tasks": [
+    "middle_error", "multiple_failures", "empty_stdout", "stderr_only",
+    "long_json_line", "unicode_crlf", "cancelled", "quota_reached",
+    "expired_reference", "repeated_query", "missing_metadata", "cross_session_reference"
+  ]
+}
