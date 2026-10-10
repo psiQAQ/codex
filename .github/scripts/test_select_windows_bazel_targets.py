@@ -124,6 +124,34 @@ class SelectWindowsBazelTargetsTest(unittest.TestCase):
             self.assertEqual(result.stdout, b"")
             self.assertIn(b"missing.tsv", result.stderr)
 
+    def test_uniform_weights_cover_linux_targets_without_windows_timings(self) -> None:
+        script = DURATIONS_PATH.with_name("select_windows_bazel_targets.py")
+        targets = [f"//codex-rs/component-{index}:tests" for index in range(19)]
+        expected, _ = assign_targets(targets, {}, 4)
+        selected = []
+        for shard in range(1, 5):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--uniform-weights",
+                    "--shard",
+                    str(shard),
+                    "--shard-count",
+                    "4",
+                ],
+                input=("\n".join(reversed(targets)) + "\n").encode(),
+                capture_output=True,
+                check=True,
+            )
+            actual = result.stdout.decode().splitlines()
+            self.assertEqual(actual, expected[shard - 1])
+            self.assertIn(b"unit loads=[5, 5, 5, 4]", result.stderr)
+            self.assertNotIn(b"estimated test-seconds", result.stderr)
+            selected.extend(actual)
+        self.assertEqual(sorted(selected), sorted(targets))
+        self.assertEqual(len(selected), len(set(selected)))
+
     def test_cli_rejects_bad_or_empty_selection_without_partial_output(self) -> None:
         script = DURATIONS_PATH.with_name("select_windows_bazel_targets.py")
         for targets, error in (

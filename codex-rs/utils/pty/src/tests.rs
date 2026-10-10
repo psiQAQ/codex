@@ -1129,7 +1129,9 @@ async fn pty_dropped_output_receiver_keeps_draining_child() -> anyhow::Result<()
         )
         .await?;
         drop(stdout_rx);
-        let code = tokio::time::timeout(std::time::Duration::from_secs(2), exit_rx).await??;
+        // The child's ten-second alarm bounds a blocked writer. Allow its exit
+        // status to arrive under CI load and assert that the alarm did not fire.
+        let code = tokio::time::timeout(std::time::Duration::from_secs(15), exit_rx).await??;
         assert_eq!(code, 0, "child should finish even when output is discarded");
     }
     Ok(())
