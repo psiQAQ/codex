@@ -1,20 +1,29 @@
 use super::*;
+#[cfg(windows)]
 use crate::context_manager::ContextManager;
 use crate::session::session::Session;
+#[cfg(windows)]
 use crate::session::step_context::StepContext;
+#[cfg(windows)]
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
 use crate::session::tests::mcp_config_for_test;
 use crate::session::turn_context::TurnContext;
+#[cfg(windows)]
 use crate::tools::context::ToolCallSource;
+#[cfg(windows)]
 use crate::tools::context::ToolInvocation;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::spec_plan::build_core_tool_registry;
+#[cfg(windows)]
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_features::Feature;
+#[cfg(windows)]
 use codex_protocol::models::ResponseItem;
+#[cfg(windows)]
 use codex_utils_output_truncation::TruncationPolicy;
 use std::sync::Arc;
+#[cfg(windows)]
 use tokio::sync::Mutex;
 
 async fn setup(
@@ -86,6 +95,7 @@ async fn setup(
     );
     (session, turn, registry)
 }
+#[cfg(windows)]
 async fn invoke(
     registry: &ToolRegistry,
     session: &Arc<Session>,
@@ -115,6 +125,7 @@ async fn invoke(
     .await
     .expect("fixture tool completes within 20 seconds")
 }
+#[cfg(windows)]
 fn response_text(envelope: &codex_history::ResponseItemEnvelope) -> String {
     let ResponseItem::FunctionCallOutput { output, .. } = &envelope.item else {
         panic!("function output");
