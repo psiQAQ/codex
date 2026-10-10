@@ -288,6 +288,7 @@ nightly_rust.repository_set(
     target_triple = "x86_64-pc-windows-gnullvm",
     versions = ["nightly/2026-08-20"],
 )
+
 # Stable proc-macros must use the same native gnullvm ABI as their compiler.
 nightly_rust.repository_set(
     name = "rust_windows_gnullvm",
